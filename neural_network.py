@@ -69,8 +69,8 @@ def cross_entropy(predicted, target, derivative=False):
         return result
     else:
         result = np.array(target)
-        result[result == 1.0] = -np.log(predicted[result == 1.0])
-        result[result == 0.0] = -np.log(1.0 - predicted[result == 0.0])
+        result[result == 1.0] = -np.log(predicted[result == 1.0] + 1e-8)
+        result[result == 0.0] = -np.log(1.0 - predicted[result == 0.0] + 1e-8)
         return result
 
 def split_data(data, test_ratio):
@@ -83,6 +83,8 @@ class NeuralNetwork:
 
     layers = []
     mini_batch_size = 2
+
+    curr_epoch = 0
 
     accuracy_arr = []
     loss_arr = []
@@ -104,6 +106,7 @@ class NeuralNetwork:
         self.layers[-1].cost = cost_func
         for layer in self.layers:
             layer.set_wb()
+        
     
     def forward(self, input):
         new_input = np.array(input)
@@ -123,21 +126,67 @@ class NeuralNetwork:
 
         for i in reversed(range(len(self.layers))):
             if i == (len(self.layers) - 1):
-                self.layers[i].error = self.layers[i].cost(predicted, target, derivative=True) * self.layers[i].activation_func(self.layers[i].z, derivative=True)
+                self.layers[i].error = self.layers[i].cost(predicted, target, derivative=True) * \
+                self.layers[i].activation_func(self.layers[i].z, derivative=True)
             else:
-                self.layers[i].error = np.dot(self.layers[i + 1].weights, self.layers[i + 1].error) * self.layers[i].activation_func(self.layers[i].z, derivative=True)
+                if self.gd_optimizer == 'nag':
+                    self.layers[i].error = np.dot(self.layers[i + 1].weights - self.gamma1 * self.momentum_w[i + 1], self.layers[i + 1].error) * \
+                    self.layers[i].activation_func(self.layers[i].z, derivative=True)
+                else:
+                    self.layers[i].error = np.dot(self.layers[i + 1].weights, self.layers[i + 1].error) * \
+                    self.layers[i].activation_func(self.layers[i].z, derivative=True)
             self.layers[i].dw = np.dot(self.layers[i].prev, self.layers[i].error.T) / predicted.shape[1]
-            
+            self.layers[i].db = np.sum(self.layers[i].error) / predicted.shape[1]
+
     def update_model(self):
-        for layer in self.layers:
-            layer.weights -= self.lr * layer.dw
-            layer.bias -= self.lr * np.sum(layer.error) 
+        for i in range(len(self.layers)):
+            if self.gd_optimizer == None:
+                self.delta_w[i] = self.lr * self.layers[i].dw
+                self.delta_b[i] = self.lr * self.layers[i].db
+            elif self.gd_optimizer == 'momentum' or self.gd_optimizer == 'nag':
+                self.momentum_w[i] = self.gamma1 * self.momentum_w[i] + self.lr * self.layers[i].dw
+                self.momentum_b[i] = self.gamma1 * self.momentum_b[i] + self.lr * self.layers[i].db
+                self.delta_w[i] = self.momentum_w[i]
+                self.delta_b[i] = self.momentum_b[i]
+            elif self.gd_optimizer == 'adagrad':
+                self.cache_w[i] += self.layers[i].dw ** 2
+                self.delta_w[i] = self.lr * self.layers[i].dw / (np.sqrt(self.cache_w[i]) + 1e-8)
+                self.cache_b[i] += self.layers[i].db ** 2
+                self.delta_b[i] = self.lr * self.layers[i].db / (np.sqrt(self.cache_b[i]) + 1e-8)
+            elif self.gd_optimizer == 'rmsprop':
+                self.cache_w[i] = self.gamma1 * self.cache_w[i] + (1 - self.gamma1) * self.layers[i].dw ** 2
+                self.delta_w[i] = self.lr * self.layers[i].dw / (np.sqrt(self.cache_w[i]) + 1e-8)
+                self.cache_b[i] = self.gamma1 * self.cache_b[i] + (1 - self.gamma1) * self.layers[i].db ** 2
+                self.delta_b[i] = self.lr * self.layers[i].db / (np.sqrt(self.cache_b[i]) + 1e-8)
+            elif self.gd_optimizer == 'adadelta':
+                self.cache_w[i] = self.gamma1 * self.cache_w[i] + (1 - self.gamma1) * self.layers[i].dw ** 2
+                self.x_w[i] = self.gamma1 * self.x_w[i] + (1 - self.gamma1) * self.delta_w[i] ** 2
+                self.delta_w[i] = np.sqrt(self.x_w[i] + 1e-8) * self.layers[i].dw / np.sqrt(self.cache_w[i] + 1e-8)
+                self.cache_b[i] = self.gamma1 * self.cache_b[i] + (1 - self.gamma1) * self.layers[i].db ** 2
+                self.x_b[i] = self.gamma1 * self.x_b[i] + (1 - self.gamma1) * self.delta_b[i] ** 2
+                self.delta_b[i] = np.sqrt(self.x_b[i] + 1e-8) * self.layers[i].db / np.sqrt(self.cache_b[i] + 1e-8)
+            elif self.gd_optimizer == 'adam':
+                self.m_w[i] = self.gamma1 * self.m_w[i] + (1 - self.gamma1) * self.layers[i].dw 
+                self.u_w[i] = self.gamma2 * self.u_w[i] + (1 - self.gamma2) * self.layers[i].dw ** 2
+                self.m_ws[i] = self.m_w[i] / (1 - self.gamma1 ** (self.curr_epoch + 1))
+                self.u_ws[i] = self.u_w[i] / (1 - self.gamma2 ** (self.curr_epoch + 1))
+                self.delta_w[i] = self.lr * self.m_ws[i] / np.sqrt(self.u_ws[i] + 1e-8)
+
+                self.m_b[i] = self.gamma1 * self.m_b[i] + (1 - self.gamma1) * self.layers[i].db
+                self.u_b[i] = self.gamma2 * self.u_b[i] + (1 - self.gamma2) * self.layers[i].db ** 2
+                self.m_bs[i] = self.m_b[i] / (1 - self.gamma1 ** (self.curr_epoch + 1))
+                self.u_bs[i] = self.u_b[i] / (1 - self.gamma2 ** (self.curr_epoch + 1))
+                self.delta_b[i] = self.lr * self.m_bs[i] / np.sqrt(self.u_bs[i] + 1e-8)
+
+            self.layers[i].weights -= self.delta_w[i]
+            self.layers[i].bias -= self.delta_b[i]
 
     def sgd(self, inputs, outputs):
         time1 = time.time()
         for epoch in range(self.n_epoch):
             self.curr_epoch_accuracy = 0
             self.curr_epoch_loss = 0
+            self.curr_epoch = epoch
             for i in np.random.choice(len(inputs), len(inputs), replace=False):
                 if self.n_outputs > 1:
                     output_label = np.zeros((self.n_outputs, 1))
@@ -157,6 +206,7 @@ class NeuralNetwork:
         for epoch in range(self.n_epoch):
             self.curr_epoch_accuracy = 0
             self.curr_epoch_loss = 0
+            self.curr_epoch = epoch
             if self.n_outputs > 1:
                 output_label = np.zeros((self.n_outputs, len(outputs)))
                 for i in range(len(outputs)):
@@ -177,6 +227,7 @@ class NeuralNetwork:
         for epoch in range(self.n_epoch):    
             self.curr_epoch_accuracy = 0
             self.curr_epoch_loss = 0
+            self.curr_epoch = epoch
             for batch in mini_batches:
                 batch_inputs = batch[0]
                 batch_outputs = batch[1]
@@ -217,9 +268,36 @@ class NeuralNetwork:
 
         return mini_batches
 
-    def train(self, inputs, outputs, gd_func, n_epoch=1, lr=0.001):
+    def train(self, inputs, outputs, gd_func, n_epoch=1, lr=0.001, gd_optimizer=None):
         self.n_epoch = n_epoch
         self.lr = lr
+        self.gd_optimizer = gd_optimizer
+
+        self.delta_w = np.array([np.zeros_like(self.layers[i].weights) for i in range(len(self.layers))])
+        self.delta_b = np.zeros((len(self.layers), 1))
+
+        if gd_optimizer == 'momentum' or gd_optimizer == 'nag':
+            self.momentum_w = np.array([np.zeros_like(self.layers[i].weights) for i in range(len(self.layers))])
+            self.momentum_b = np.zeros((len(self.layers), 1))
+        elif gd_optimizer == 'adagrad' or gd_optimizer == 'rmsprop' or gd_optimizer == 'adadelta':
+            self.cache_w = np.array([np.zeros_like(self.layers[i].weights) for i in range(len(self.layers))])
+            self.cache_b = np.zeros((len(self.layers), 1))
+            if gd_optimizer == 'adadelta':
+                self.x_w = np.array([np.zeros_like(self.layers[i].weights) for i in range(len(self.layers))])
+                self.x_b = np.zeros((len(self.layers), 1))
+        elif gd_optimizer == 'adam':
+            self.m_w =np.array([np.zeros_like(self.layers[i].weights) for i in range(len(self.layers))])
+            self.u_ws = np.array([np.zeros_like(self.layers[i].weights) for i in range(len(self.layers))])
+            self.m_ws =np.array([np.zeros_like(self.layers[i].weights) for i in range(len(self.layers))])
+            self.u_w =np.array([np.zeros_like(self.layers[i].weights) for i in range(len(self.layers))])
+            self.m_b = np.zeros((len(self.layers), 1))
+            self.u_bs = np.zeros((len(self.layers), 1))
+            self.m_bs = np.zeros((len(self.layers), 1))
+            self.u_b = np.zeros((len(self.layers), 1))
+            self.t = 0
+
+        self.gamma1 = .9
+        self.gamma2 = .999
         gd_func(inputs, outputs)
 
     def test(self, inputs, outputs):
@@ -270,23 +348,20 @@ def run():
     train_outputs = train_set[:,-1:]
 
     network = NeuralNetwork(train_inputs.shape[1], len(np.unique(train_outputs)))
-    network.add_layer(20, relu)
+    network.add_layer(25, relu)
     network.add_layer(15, relu)
     network.build_network(softmax, cross_entropy)
 
     network.mini_batch_size = 10
-    network.train(train_inputs, train_outputs, network.mbgd, 500, 0.0005)
-
-    plt.plot(network.loss_arr)
-    #plt.plot(network.accuracy_arr)
+    network.train(train_inputs, train_outputs, network.sgd, 100, 0.001, gd_optimizer='adam')
+    #plt.plot(network.loss_arr)
+    plt.plot(network.accuracy_arr)
     plt.show()
 
     test_inputs = test_set[:,:-1]
     test_outputs = test_set[:,-1:]
 
     network.test(test_inputs, test_outputs)
-
-    print(network.accuracy_arr)
 
 if __name__ == '__main__':
     run()
