@@ -37,15 +37,27 @@ class RNN(NeuralNetwork):
         for layer in self.layers:
             layer.prepare_for_train('layer_params', 'timestep_params', timestep_params=(layer.n, layer.n))
             if type(layer) is RNNLayer:
-                for timestep in layer.timesteps:
-                    timestep.prepare_for_train('layer_params')
+                for i in range(neural_network.data_size):
+                    layer.timesteps.append(NNLayer(layer.n, layer.n_prev, layer.activation_func))
+                    layer.timesteps[-1].set_wb()
+                    layer.timesteps[-1].prepare_for_train('layer_params')
+
+    def forward(self, input):
+        global curr_data_point
+        for i in range(neural_network.data_size):
+            curr_data_point = i
+            new_input = np.array(input)
+            for layer in self.layers:
+                new_input = layer.forward(new_input)
+        curr_data_point = 0
+        return new_input
 
     def update_model(self):
         for layer in self.layers:
             if type(layer) is RNNLayer:
                 for i in range(len(layer.timesteps)):
                     layer_dw, layer_db = layer.timesteps[i].get_optimized_diff('layer_params')
-                    layer.timesteps[i].weights -= layer_dw 
+                    layer.weights -= layer_dw 
 
                 timestep_dw, timestep_db = layer.get_optimized_diff('timestep_params')
                 layer.timesteps_conn -= timestep_dw 
@@ -55,23 +67,20 @@ class RNN(NeuralNetwork):
                 layer.weights -= layer_dw
                 layer.bias -= layer_db
 
-    def sgd(self, inputs, outputs):
-        time1 = time.time()
-        global curr_data_point
-        for epoch in range(self.n_epoch):
-            self.curr_epoch_accuracy = 0
-            self.curr_epoch_loss = 0
-            neural_network.curr_epoch = epoch
-            for i in range(len(inputs)):
-                curr_data_point = i
-                predicted = self.forward(inputs[i].reshape(inputs[i].shape[0], -1))
-                self.backpropagate(predicted, outputs[i].reshape(outputs[i].shape[0], -1))
-                self.update_model()
-            self.accuracy_arr.append(self.curr_epoch_accuracy / inputs.shape[0])
-            self.loss_arr.append(self.curr_epoch_loss / inputs.shape[0])
-        curr_data_point = 0
-        time2 = time.time()
-        print('Stochastic GD {} ---- {}'.format(self.n_epoch, (time2 - time1) * 1000.0))
+    # def sgd(self, inputs, outputs):
+    #     time1 = time.time()
+    #     for epoch in range(self.n_epoch):
+    #         self.curr_epoch_accuracy = 0
+    #         self.curr_epoch_loss = 0
+    #         neural_network.curr_epoch = epoch
+    #         for i in range(len(inputs)):
+    #             predicted = self.forward(inputs[i].reshape(inputs[i].shape[0], -1))
+    #             self.backpropagate(predicted, outputs[i].reshape(outputs[i].shape[0], -1))
+    #             self.update_model()
+    #         self.accuracy_arr.append(self.curr_epoch_accuracy / inputs.shape[0])
+    #         self.loss_arr.append(self.curr_epoch_loss / inputs.shape[0])
+    #     time2 = time.time()
+    #     print('Stochastic GD {} ---- {}'.format(self.n_epoch, (time2 - time1) * 1000.0))
 
 
 class RNNLayer(NNLayer):
@@ -93,15 +102,13 @@ class RNNLayer(NNLayer):
         self.prev = np.copy(input)
         if curr_data_point > 0:
             prev_input = np.dot(self.timesteps_conn.T, self.timesteps[curr_data_point - 1].a)
-        if len(self.timesteps) < neural_network.data_size:
-            self.timesteps.append(NNLayer(self.n, self.n_prev, self.activation_func))
-            self.timesteps[-1].set_wb()
-            self.timesteps[-1].prepare_for_train('layer_params')
+
         self.timesteps[curr_data_point].prev = self.prev
         self.timesteps[curr_data_point].prev_timestep = prev_input
-        self.timesteps[curr_data_point].z = np.dot(self.timesteps[curr_data_point].weights.T, input)
-        self.z = self.timesteps[curr_data_point].z + prev_input + self.bias
-        self.timesteps[curr_data_point].a = self.activate_neurons(self.z) 
+        self.timesteps[curr_data_point].z = np.dot(self.weights.T, input) + prev_input + self.bias
+        self.timesteps[curr_data_point].a = self.activate_neurons(self.timesteps[curr_data_point].z)
+        self.z = self.timesteps[curr_data_point].z
+        self.a = self.timesteps[curr_data_point].a
         return self.timesteps[curr_data_point].a
 
     def backward(self, prev_err):
@@ -135,22 +142,22 @@ def run():
 
     network = RNN(vocab_size, vocab_size)
 
-    network.add_layer(20, tanh)
+    network.add_layer(7, tanh)
 
     network.build_network(softmax, cross_entropy)
 
     train_inputs = neural_network.data_to_label(data[:-1])
     train_outputs = neural_network.data_to_label(data[1:])
 
-    network.train(train_inputs, train_outputs, network.sgd, 1000, 0.001, gd_optimizer='adadelta')
+    network.train(train_inputs, train_outputs, network.sgd, 100, 0.01, gd_optimizer='adam')
 
-    test_data = '2'
+    test_data = '5'
     test_label = neural_network.data_to_label(test_data)
     result = network.forward(test_label.T)
     print(int_to_data[int(np.argmax(result.T[-1]))])
     """for i in range(len(data) - 1):
         print(neural_network.int_to_data[i])"""
-    #plt.plot(network.loss_arr)
+    plt.plot(network.loss_arr)
     plt.plot(network.accuracy_arr)
     plt.show()
 

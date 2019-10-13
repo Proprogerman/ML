@@ -133,7 +133,6 @@ class NeuralNetwork:
         self.layers[-1].cost = cost_func
         for layer in self.layers:
             layer.set_wb(w, b)
-            print('layer{0}: {1}'.format(layer.n, np.shape(layer.weights)))
     
     def forward(self, input):
         new_input = np.array(input)
