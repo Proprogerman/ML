@@ -3,7 +3,6 @@ import pandas as pd
 import random
 import time
 import math
-import matplotlib.pyplot as plt
 
 
 def sigmoid(x, derivative=False):
@@ -104,6 +103,10 @@ def data_to_label(data):
             result[i][data_to_int[int(data[i])]] = 1.0
     return result
 
+def label_to_data(label):   
+    data_id = np.argmax(label)
+    return int_to_data[data_id]
+
 
 class NeuralNetwork:
 
@@ -130,6 +133,7 @@ class NeuralNetwork:
         self.layers[-1].cost = cost_func
         for layer in self.layers:
             layer.set_wb(w, b)
+            print('layer{0}: {1}'.format(layer.n, np.shape(layer.weights)))
     
     def forward(self, input):
         new_input = np.array(input)
@@ -151,7 +155,7 @@ class NeuralNetwork:
             else:
                 global optimizer, gamma1
                 next_params = getattr(self.layers[i + 1], 'layer_params')
-                nag_opt = -gamma1 * self.layers[i + 1].momentum_w if optimizer == 'nag' else 0
+                nag_opt = -gamma1 * next_params['momentum_w'] if optimizer == 'nag' else 0
                 error = np.dot(self.layers[i + 1].weights + nag_opt, next_params['error'])
                 self.layers[i].backward(error)
 
@@ -366,36 +370,3 @@ class NNLayer:
             params['delta_b'] = lr * params['m_bs'] / np.sqrt(params['u_bs'] + 1e-8)
 
         return params['delta_w'], params['delta_b']
-
-
-def run():
-    dataset = pd.read_csv('C:\Development\PythonProjects\ML\my_nn\seeds.csv')
-    df = pd.DataFrame(dataset)
-    dv = df.values
-    dv[:,:-1] = (dv[:,:-1] - dv[:,:-1].min()) / (dv[:,:-1].max() - dv[:,:-1].min())
-
-    map_data(dv[:,-1:])
-    
-    train_set, test_set = split_data(dv, 0.2)
-    train_inputs = train_set[:,:-1]
-    train_outputs = train_set[:,-1:]
-    train_outputs = data_to_label(train_outputs)
-
-    network = NeuralNetwork(train_inputs.shape[1], len(np.unique(dv[:,-1:])))
-    network.add_layer(25, relu)
-    network.add_layer(15, relu)
-    network.build_network(softmax, cross_entropy)
-
-    network.mini_batch_size = 10
-    network.train(train_inputs, train_outputs, network.sgd, 100, 0.001, gd_optimizer='adam')
-    #plt.plot(network.loss_arr)
-    plt.plot(network.accuracy_arr)
-    plt.show()
-
-    test_inputs = test_set[:,:-1]
-    test_outputs = test_set[:,-1:]
-
-    network.test(test_inputs, test_outputs)
-
-if __name__ == '__main__':
-    run()
