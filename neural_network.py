@@ -51,11 +51,11 @@ def relu(x, derivative=False):
 
 def softmax(x, derivative=False):
     if derivative:
-        s = softmax(x).reshape(-1,1)
+        s = softmax(x).reshape(-1, 1)
         return np.diag(np.diagflat(s) - np.dot(s, s.T)).reshape(x.shape)
     else:
         exps = np.exp(x + 1e-8)
-        return exps / (np.sum(exps, axis=0) + 1e-8)
+        return exps / (np.sum(exps, axis=1).reshape(x.shape[0], -1) + 1e-8)
 
 def mse_cost(predicted, target, derivative=False):
     if derivative:
@@ -135,15 +135,16 @@ class NeuralNetwork:
             layer.set_wb(w, b)
     
     def forward(self, input):
-        new_input = np.array(input)
+        input = np.atleast_2d(input)
         for layer in self.layers:
-            new_input = layer.forward(new_input)
-        return new_input
+            input = layer.forward(input)
+        return input
 
     def backpropagate(self, predicted, target):
+        target = np.atleast_2d(target)
         if self.n_outputs > 1:
             predicted_map = np.zeros(predicted.shape)
-            predicted_map[predicted == np.max(predicted, axis=0)] = 1
+            predicted_map[predicted == np.max(predicted, axis=1).reshape(predicted.shape[0], -1)] = 1
             self.curr_epoch_accuracy += np.sum(predicted_map * target)
         self.curr_epoch_loss += np.sum(self.layers[-1].cost(predicted, target))
 
@@ -154,8 +155,8 @@ class NeuralNetwork:
             else:
                 global optimizer, gamma1
                 next_params = getattr(self.layers[i + 1], 'layer_params')
-                nag_opt = -gamma1 * next_params['momentum_w'] if optimizer == 'nag' else 0
-                error = np.dot(self.layers[i + 1].weights + nag_opt, next_params['error'])
+                nag_opt = -gamma1 * next_params['momentum_w'] if optimizer == 'nag' else np.zeros(self.layers[i+1].weights.shape)
+                error = np.dot(next_params['error'], self.layers[i + 1].weights.T + nag_opt.T)
                 self.layers[i].backward(error)
 
     def update_model(self):
@@ -172,8 +173,8 @@ class NeuralNetwork:
             self.curr_epoch_loss = 0
             curr_epoch = epoch
             for i in np.random.choice(len(inputs), len(inputs), replace=False):
-                predicted = self.forward(inputs[i].reshape(inputs[i].shape[0], -1))
-                self.backpropagate(predicted, outputs[i].reshape(outputs[i].shape[0], -1))
+                predicted = self.forward(inputs[i])
+                self.backpropagate(predicted, outputs[i])
                 self.update_model()
             self.accuracy_arr.append(self.curr_epoch_accuracy / inputs.shape[0])
             self.loss_arr.append(self.curr_epoch_loss / inputs.shape[0])
@@ -187,8 +188,8 @@ class NeuralNetwork:
             self.curr_epoch_accuracy = 0
             self.curr_epoch_loss = 0
             curr_epoch = epoch
-            predicted = self.forward(inputs.T)
-            self.backpropagate(predicted, outputs.T)
+            predicted = self.forward(inputs)
+            self.backpropagate(predicted, outputs)
             self.update_model()
             self.accuracy_arr.append(self.curr_epoch_accuracy / inputs.shape[0])
             self.loss_arr.append(self.curr_epoch_loss / inputs.shape[0])
@@ -206,8 +207,8 @@ class NeuralNetwork:
             for batch in mini_batches:
                 batch_inputs = batch[0]
                 batch_outputs = batch[1]
-                predicted = self.forward(batch_inputs.T)
-                self.backpropagate(predicted, batch_outputs.T)
+                predicted = self.forward(batch_inputs)
+                self.backpropagate(predicted, batch_outputs)
                 self.update_model()
             self.accuracy_arr.append(self.curr_epoch_accuracy / inputs.shape[0])
             self.loss_arr.append(self.curr_epoch_loss / inputs.shape[0])
@@ -244,6 +245,9 @@ class NeuralNetwork:
         optimizer = gd_optimizer
         data_size = inputs.shape[0]
 
+        inputs = np.atleast_2d(inputs)
+        outputs = np.atleast_2d(outputs)
+
         self.prepare_for_train()
 
         global gamma1, gamma2 
@@ -255,19 +259,20 @@ class NeuralNetwork:
             layer.prepare_for_train('layer_params')
 
     def test(self, inputs, outputs):
-        predicted = self.forward(inputs.T)
+        predicted = self.forward(inputs)
         if self.n_outputs > 1:
-            output_label = np.zeros((self.n_outputs, len(outputs)))
+            output_label = np.zeros((len(outputs), self.n_outputs))
             for i in range(len(outputs)):
-                output_label[data_to_int[int(outputs[i])]][i] = 1.0
+                output_label[i][data_to_int[int(outputs[i])]] = 1.0
         else:
             output_label = outputs
         if self.n_outputs > 1:
             predicted_map = np.zeros(predicted.shape)
-            predicted_map[predicted == np.max(predicted, axis=0)] = 1.0
+            predicted_map[predicted == np.max(predicted, axis=1).reshape(predicted.shape[0],-1)] = 1.0
+
             self.test_accuracy = np.sum(predicted_map * output_label) / inputs.shape[0]
-            for i in range(predicted.T.shape[0]):
-                print('Target: {} ----- Predicted: {} {}'.format(outputs[i], predicted.T[i], predicted_map.T[i]))
+            for i in range(predicted.shape[0]):
+                print('Target: {} ----- Predicted: {} {}'.format(outputs[i], predicted[i], predicted_map[i]))
             print(self.test_accuracy)
 
 
@@ -284,7 +289,7 @@ class NNLayer:
     def set_wb(self, w=None, b=None):
         #np.random.seed(1)
         self.weights = w if w else np.random.uniform(low=-1.0, high=1.0, size=(self.n_prev, self.n))
-        self.bias = b if b else 1
+        self.bias = b if b else np.random.uniform(low=-1.0, high=1.0, size=(1,self.n))
 
     def activate_neurons(self, input):
         z = self.activation_func(input)
@@ -292,15 +297,15 @@ class NNLayer:
     
     def forward(self, input):
         self.prev = input
-        self.z = np.dot(self.weights.T, input) + self.bias
+        self.z = np.dot(input, self.weights) + self.bias
         self.a = self.activate_neurons(self.z)
         return self.a
 
     def backward(self, prev_err):
         item_params = getattr(self, 'layer_params')
         item_params['error'] = prev_err * self.activation_func(self.z, derivative=True)
-        item_params['dw'] = np.dot(self.prev, item_params['error'].T) / prev_err.shape[1]
-        item_params['db'] = np.sum(item_params['error']) / prev_err.shape[1]
+        item_params['dw'] = np.dot(self.prev.T, item_params['error']) / prev_err.shape[1]
+        item_params['db'] = item_params['error'] / prev_err.shape[1]
 
     def prepare_for_train(self, *items, **item_weights):
         global optimizer
@@ -368,4 +373,4 @@ class NNLayer:
             params['u_bs'] = params['u_b'] / (1 - gamma2 ** (curr_epoch + 1))
             params['delta_b'] = lr * params['m_bs'] / np.sqrt(params['u_bs'] + 1e-8)
 
-        return params['delta_w'], params['delta_b']
+        return np.sum(params['delta_w'], axis=0), np.sum(params['delta_b'], axis=0)
